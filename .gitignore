@@ -1,0 +1,12 @@
+# Secrets and cookies must never be committed
+.env
+.env.*
+!.env.example
+cookies.txt
+*.cookie
+__pycache__/
+*.pyc
+*.mp3
+*.log
+.venv/
+venv/
