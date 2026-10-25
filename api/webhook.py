@@ -172,11 +172,9 @@ async def handle_callback(client, cb):
         r.raise_for_status()
     except Exception as exc:
         print("Download failed:", repr(exc))
-        await send_text(
-            client,
-            chat_id,
-            "❌ មិនអាចទាញយកបានទេ។ ប្រហែលជាប្រភពត្រូវបានរារាំង ឬឯកសារធំពេក ឬអស់ពេល។",
-        )
+        detail = re.sub(r"\x1b\[[0-9;]*m", "", str(exc))
+        detail = re.sub(r"\s+", " ", detail)[:300]
+        await send_text(client, chat_id, "❌ មិនអាចទាញយកបានទេ។\n" + detail)
     finally:
         if folder:
             shutil.rmtree(folder, ignore_errors=True)
