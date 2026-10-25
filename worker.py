@@ -1,21 +1,28 @@
+import hmac
 import os
 import re
-import threading
-import tempfile
 import shutil
+import tempfile
 from pathlib import Path
+from typing import Union
 
 import requests
 import yt_dlp
-from flask import Flask, request, jsonify
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
 
-app = Flask(__name__)
+# Docs/OpenAPI disabled: this service is private and secret-protected.
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 WORKER_SECRET = os.environ["WORKER_SECRET"]
 COOKIE_FILE = os.environ.get("COOKIE_FILE", "cookies.txt")
 MAX_BYTES = 45 * 1024 * 1024
-ALLOWED_ID = re.compile(r"^[A-Za-z0-9_-]{6,20}$")
+
+
+class DownloadRequest(BaseModel):
+    video_id: str = Field(pattern=r"^[A-Za-z0-9_-]{6,20}$")
+    chat_id: Union[int, str]
 
 
 def telegram(method, payload=None, files=None, timeout=120):
@@ -88,29 +95,27 @@ def process_download(video_id, chat_id):
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": True})
+    return {"ok": True}
 
 
 @app.post("/download")
-def download():
-    if request.headers.get("X-Worker-Secret", "") != WORKER_SECRET:
-        return jsonify({"ok": False, "message": "Forbidden"}), 403
+def download(
+    body: DownloadRequest,
+    background_tasks: BackgroundTasks,
+    x_worker_secret: str = Header(default=""),
+):
+    if not hmac.compare_digest(x_worker_secret, WORKER_SECRET):
+        raise HTTPException(status_code=403, detail="Forbidden")
 
-    body = request.get_json(silent=True) or {}
-    video_id = str(body.get("video_id", ""))
-    chat_id = body.get("chat_id")
-
-    if not ALLOWED_ID.fullmatch(video_id) or not isinstance(chat_id, (int, str)):
-        return jsonify({"ok": False, "message": "Invalid request"}), 400
-
-    threading.Thread(
-        target=process_download, args=(video_id, chat_id), daemon=True
-    ).start()
-    return jsonify({
+    # Sync function -> runs in FastAPI's threadpool after the response is sent.
+    background_tasks.add_task(process_download, body.video_id, body.chat_id)
+    return {
         "ok": True,
-        "message": "⏳ បានទទួលសំណើ។ បើអាចទាញយកបាន Bot នឹងផ្ញើ MP3 មកឆាប់ៗនេះ។"
-    })
+        "message": "⏳ បានទទួលសំណើ។ បើអាចទាញយកបាន Bot នឹងផ្ញើ MP3 មកឆាប់ៗនេះ។",
+    }
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))

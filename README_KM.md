@@ -1,8 +1,8 @@
 # Telegram MP3 Bot (Webhook + Worker)
 
 គម្រោងគំរូនេះមាន៖
-- Telegram webhook លើ Vercel: ស្វែងរក YouTube ៥ លទ្ធផល និងបង្ហាញ Inline Buttons។
-- Python worker: ទទួលជម្រើសបទ, ប្រើ yt-dlp និង FFmpeg ដើម្បីបង្កើត MP3 ហើយផ្ញើតាម Telegram។
+- Telegram webhook (FastAPI) លើ Vercel: ស្វែងរក YouTube ៥ លទ្ធផល និងបង្ហាញ Inline Buttons។
+- Python worker (FastAPI + Uvicorn): ទទួលជម្រើសបទ, ប្រើ yt-dlp និង FFmpeg ដើម្បីបង្កើត MP3 ហើយផ្ញើតាម Telegram។
 - Cookie file ជាជម្រើសសម្រាប់ការចូលប្រើដែលអ្នកមានសិទ្ធិ។ កុំប្រើដើម្បីរំលងការការពារ ឬទាញយកមាតិកាដែលគ្មានសិទ្ធិ។
 
 ## សំខាន់
@@ -42,7 +42,8 @@ pip install -r requirements.txt
 export BOT_TOKEN='YOUR_BOT_TOKEN'
 export WORKER_SECRET='SAME_SECRET_AS_VERCEL'
 export COOKIE_FILE='cookies.txt'
-python worker.py
+uvicorn worker:app --host 0.0.0.0 --port 8080
+# ឬ: python worker.py
 ```
 Worker ត្រូវមាន public HTTPS URL ដែល Vercel អាចហៅបាន។ កុំបើក endpoint ទៅ public ដោយគ្មាន HTTPS និង secret។
 
