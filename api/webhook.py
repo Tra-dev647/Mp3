@@ -1,17 +1,22 @@
+import asyncio
 import hmac
 import os
 import re
+import shutil
+import tempfile
+from pathlib import Path
 
 import httpx
+import yt_dlp
 from fastapi import FastAPI, Request, Response
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
-WORKER_URL = os.environ["WORKER_URL"].rstrip("/")
-WORKER_SECRET = os.environ["WORKER_SECRET"]
+COOKIES_TXT = os.environ.get("COOKIES_TXT", "")
 
 MAX_BODY = 100_000
+MAX_BYTES = 45 * 1024 * 1024
 VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{6,20}$")
 
 # Docs/OpenAPI disabled: this endpoint is only meant for Telegram.
@@ -96,6 +101,44 @@ async def handle_message(client, message):
     await send_text(client, chat_id, "\n".join(lines)[:3900], keyboard)
 
 
+def download_audio(video_id):
+    """Blocking: download audio without FFmpeg (m4a preferred). Returns (path, title, folder)."""
+    folder = tempfile.mkdtemp(prefix="mp3bot_", dir="/tmp")
+    options = {
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio",
+        "outtmpl": os.path.join(folder, "%(id)s.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "socket_timeout": 20,
+        "retries": 1,
+        "max_filesize": MAX_BYTES,
+        "cachedir": False,  # Vercel filesystem is read-only except /tmp
+    }
+
+    # Optional cookies: use only an account/export you are authorized to use.
+    if COOKIES_TXT.strip():
+        cookie_path = os.path.join(folder, "cookies.txt")
+        Path(cookie_path).write_text(COOKIES_TXT, encoding="utf-8")
+        options["cookiefile"] = cookie_path
+
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(
+                f"https://www.youtube.com/watch?v={video_id}", download=True
+            )
+        files = [p for p in Path(folder).iterdir() if p.name != "cookies.txt"]
+        if not files:
+            raise RuntimeError("No audio output")
+        path = max(files, key=lambda p: p.stat().st_size)
+        if path.stat().st_size > MAX_BYTES:
+            raise RuntimeError("File exceeds size limit")
+        return path, str(info.get("title", "audio"))[:64], folder
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+
+
 async def handle_callback(client, cb):
     await telegram(client, "answerCallbackQuery", {
         "callback_query_id": cb["id"],
@@ -111,25 +154,32 @@ async def handle_callback(client, cb):
         raise ValueError("Invalid video ID")
 
     chat_id = cb["message"]["chat"]["id"]
+    await send_text(client, chat_id, "⏳ កំពុងទាញយក សូមរង់ចាំ...")
+
+    folder = None
     try:
-        r = await client.post(
-            WORKER_URL + "/download",
-            json={"video_id": video_id, "chat_id": chat_id},
-            headers={"X-Worker-Secret": WORKER_SECRET},
-        )
+        path, title, folder = await asyncio.to_thread(download_audio, video_id)
+        is_m4a = path.suffix.lower() in (".m4a", ".mp4")
+        method, field = ("sendAudio", "audio") if is_m4a else ("sendDocument", "document")
+        with open(path, "rb") as f:
+            r = await client.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/{method}",
+                data={"chat_id": str(chat_id), "title": title,
+                      "caption": "សូមប្រើតែសំឡេងដែលអ្នកមានសិទ្ធិប្រើប្រាស់។"},
+                files={field: (f"{title[:40] or 'audio'}{path.suffix}", f)},
+                timeout=40,
+            )
         r.raise_for_status()
-        await send_text(
-            client, chat_id,
-            r.json().get("message", "បានបញ្ជូនសំណើទៅ Worker។"),
-        )
     except Exception as exc:
-        print("Worker request failed:", repr(exc))
+        print("Download failed:", repr(exc))
         await send_text(
             client,
             chat_id,
-            "Worker មិនអាចទទួលសំណើបានទេ។ សូមពិនិត្យ WORKER_URL "
-            "និង Worker ថាកំពុងដំណើរការឬអត់។",
+            "❌ មិនអាចទាញយកបានទេ។ ប្រហែលជាប្រភពត្រូវបានរារាំង ឬឯកសារធំពេក ឬអស់ពេល។",
         )
+    finally:
+        if folder:
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 @app.post("/api/webhook")
@@ -145,7 +195,7 @@ async def webhook(request: Request):
             raise ValueError("Invalid request size")
         update = await request.json()
 
-        async with httpx.AsyncClient(timeout=12) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             if "message" in update:
                 await handle_message(client, update["message"])
             elif "callback_query" in update:
